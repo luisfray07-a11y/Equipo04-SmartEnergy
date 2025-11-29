@@ -1,0 +1,102 @@
+# sensor_reader_sqlite.py
+import serial
+import sqlite3
+import time
+import re
+from datetime import datetime
+import os
+
+# Configuración SQLite - solo un archivo!
+DB_FILE = "energia_data.db"
+
+def setup_database():
+    """Crear base de datos SQLite y tabla"""
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
+    
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS sensor_data (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
+            temperature REAL,
+            humidity REAL,
+            voltage INTEGER,
+            consumption INTEGER,
+            location TEXT DEFAULT 'Peru_Profundo'
+        )
+    ''')
+    
+    # Índice para mejor performance en Grafana
+    cursor.execute('''
+        CREATE INDEX IF NOT EXISTS idx_timestamp 
+        ON sensor_data(timestamp)
+    ''')
+    
+    conn.commit()
+    conn.close()
+    print(f"✅ Base de datos SQLite creada: {DB_FILE}")
+
+def parse_arduino_data(line):
+    """Parsear datos del Arduino"""
+    try:
+        data = {}
+        parts = line.strip().split('|')
+        for part in parts:
+            if ':' in part:
+                key, value = part.split(':', 1)
+                data[key] = float(value) if '.' in value else int(value)
+        return data
+    except Exception as e:
+        print(f"Error parsing: {e}")
+        return None
+
+def main():
+    setup_database()
+    
+    # Conectar Arduino (ajustar puerto - /dev/ttyUSB0 o /dev/ttyACM0)
+    try:
+        arduino = serial.Serial('/dev/ttyACM0', 9600, timeout=1)
+        time.sleep(2)
+        print("✅ Arduino conectado")
+    except Exception as e:
+        print(f"❌ Error conectando Arduino: {e}")
+        print("💡 Prueba con: /dev/ttyUSB0, /dev/ttyACM1, etc.")
+        return
+
+    while True:
+        try:
+            if arduino.in_waiting > 0:
+                line = arduino.readline().decode('utf-8').strip()
+                print(f"📨 Raw data: {line}")  # Debug
+                
+                if line and line.startswith('TEMP'):
+                    data = parse_arduino_data(line)
+                    
+                    if data:
+                        conn = sqlite3.connect(DB_FILE)
+                        cursor = conn.cursor()
+                        
+                        cursor.execute('''
+                            INSERT INTO sensor_data 
+                            (temperature, humidity, voltage, consumption)
+                            VALUES (?, ?, ?, ?)
+                        ''', (data['TEMP'], data['HUM'], data['VOLT'], data['CONS']))
+                        
+                        conn.commit()
+                        conn.close()
+                        
+                        print(f"💾 Datos guardados: {datetime.now().strftime('%H:%M:%S')} - "
+                              f"Temp: {data['TEMP']}°C, Hum: {data['HUM']}%, "
+                              f"Volt: {data['VOLT']}, Cons: {data['CONS']}mA")
+            
+            time.sleep(2)  # Esperar 2 segundos entre lecturas
+            
+        except KeyboardInterrupt:
+            print("\n🛑 Deteniendo monitor...")
+            break
+        except Exception as e:
+            print(f"❌ Error en loop: {e}")
+            time.sleep(5)
+
+if __name__ == "__main__":
+    main()
